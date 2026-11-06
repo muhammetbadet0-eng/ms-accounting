@@ -79,7 +79,23 @@ const KEY='ms_accounting_v1';
 let db=loadDB(), deferredPrompt=null;
 function loadDB(){try{let d=JSON.parse(localStorage.getItem(KEY))||{customers:[],sales:[],payments:[],settings:{currency:'TRY',businessName:'MS Accounting'}};d.customers=d.customers||[];d.sales=d.sales||[];d.payments=d.payments||[];d.settings=d.settings||{};if(!Array.isArray(d.settings.units)||!d.settings.units.length)d.settings.units=['Adet','Levha','Metre','m²','Kg','Diğer'];return d}catch(e){return {customers:[],sales:[],payments:[],settings:{currency:'TRY',businessName:'MS Accounting',units:['Adet','Levha','Metre','m²','Kg','Diğer']}}}}
 function saveDB(){localStorage.setItem(KEY,JSON.stringify(db));renderAll();window.dispatchEvent(new Event('ms-db-updated'))}
-window.getLocalDB=()=>db;window.saveLocalDB=()=>saveDB();
+window.getLocalDB=()=>db;
+window.saveLocalDB=()=>saveDB();
+window.replaceLocalDB=(data)=>{
+  if(!data || !Array.isArray(data.customers) || !Array.isArray(data.sales) || !Array.isArray(data.payments)) {
+    throw new Error('بيانات السحابة غير صالحة');
+  }
+  db={
+    ...data,
+    customers:data.customers,
+    sales:data.sales,
+    payments:data.payments,
+    settings:{currency:'TRY',businessName:'MS Accounting',...(data.settings||{})}
+  };
+  localStorage.setItem(KEY,JSON.stringify(db));
+  renderAll();
+  window.dispatchEvent(new Event('ms-db-updated'));
+};
 function money(n){return new Intl.NumberFormat('tr-TR',{style:'currency',currency:db.settings.currency||'TRY'}).format(Number(n)||0)}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function id(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7)}
