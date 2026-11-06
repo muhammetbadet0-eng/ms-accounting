@@ -34,7 +34,6 @@ footer{text-align:center;color:var(--muted);font-size:12px;margin-top:25px}
  <button id="installBtn" class="hidden">Uygulamayı yükle</button>
 </header>
 <main>
- <div class="notice"><b>İlk sürüm:</b> Kayıtlar bu cihazın tarayıcısında saklanır. Telefon ve bilgisayar arasında otomatik bulut senkronizasyonu, Firebase bağlantısı kurulduktan sonra etkinleştirilecektir. Şimdilik düzenli yedek alın.</div>
  <nav class="nav no-print">
   <button class="active" data-page="dashboard">Genel Bakış</button>
   <button data-page="customers">Müşteriler</button>
@@ -69,9 +68,9 @@ footer{text-align:center;color:var(--muted);font-size:12px;margin-top:25px}
   <div class="card"><h2>Ayarlar</h2><label>İşletme adı</label><input id="businessName" placeholder="MS Accounting"><label>Para birimi</label><select id="currency"><option value="TRY">Türk Lirası (₺)</option><option value="USD">US Dollar ($)</option><option value="EUR">Euro (€)</option></select><div class="actionsbar"><button onclick="saveSettings()">Kaydet</button></div></div>
   <div class="card" style="margin-top:15px"><h2>Birim yönetimi</h2><p class="muted">Satış kaydındaki “Birim” listesini buradan düzenleyebilirsiniz. Eklediğiniz birimler yeni satışlarda kullanılabilir. Birimi silmek, daha önce kaydedilmiş satışlardaki birim adlarını değiştirmez.</p><div class="row" style="align-items:end;gap:8px"><div style="flex:1"><label>Yeni birim adı</label><input id="newUnitName" placeholder="Örn. Paket, Rulo, Kutu"></div><button onclick="addUnit()">Birim ekle</button></div><div id="unitList" class="list" style="margin-top:12px"></div></div>
   <div class="card" style="margin-top:15px"><h2>Hesapları sıfırla</h2><p class="muted">Tüm müşterilerin satış ve ödeme hareketleri silinir; böylece her müşterinin bakiyesi sıfırlanır. Müşteri adları, telefonları, e-posta ve notları ile birimler ve diğer ayarlar korunur. Bu işlem geri alınamaz; önce yedek indirmeniz önerilir.</p><div class="actionsbar"><button class="danger" onclick="resetAllAccounts()">Tüm hesapları sıfırla</button></div></div>
-  <div class="card" style="margin-top:15px"><h2>Bulut senkronizasyonu</h2><p class="muted">Bu sürümde veriler cihazda saklanır. Gerçek bulut kullanımı için Firebase projesi ve güvenli kullanıcı girişi yapılandırması gerekir. Bu adım tamamlanmadan aynı veriler diğer cihazlarda görünmez.</p></div>
+  <div class="card" style="margin-top:15px"><h2>Bulut senkronizasyonu</h2><p class="muted">Yönetim hesabıyla giriş yaptığınızda müşteriler, satışlar, tahsilatlar ve ayarlar Firebase üzerinden cihazlar arasında eşitlenir. İlk kurulumda yalnızca bir cihazdan başlangıç verisi yükleyin.</p></div>
  </section>
- <footer>MS Accounting · İlk sürüm · Verilerinizi düzenli yedekleyin</footer>
+ <footer>MS Accounting V1.4 · Verilerinizi düzenli yedekleyin</footer>
 </main>
 <div id="modal" class="modal hidden"><div class="modalbox"><div class="modalhead"><h2 id="modalTitle"></h2><button class="close" onclick="closeModal()">✕</button></div><div id="modalBody"></div></div></div>
 <script>
@@ -79,23 +78,8 @@ const KEY='ms_accounting_v1';
 let db=loadDB(), deferredPrompt=null;
 function loadDB(){try{let d=JSON.parse(localStorage.getItem(KEY))||{customers:[],sales:[],payments:[],settings:{currency:'TRY',businessName:'MS Accounting'}};d.customers=d.customers||[];d.sales=d.sales||[];d.payments=d.payments||[];d.settings=d.settings||{};if(!Array.isArray(d.settings.units)||!d.settings.units.length)d.settings.units=['Adet','Levha','Metre','m²','Kg','Diğer'];return d}catch(e){return {customers:[],sales:[],payments:[],settings:{currency:'TRY',businessName:'MS Accounting',units:['Adet','Levha','Metre','m²','Kg','Diğer']}}}}
 function saveDB(){localStorage.setItem(KEY,JSON.stringify(db));renderAll();window.dispatchEvent(new Event('ms-db-updated'))}
-window.getLocalDB=()=>db;
-window.saveLocalDB=()=>saveDB();
-window.replaceLocalDB=(data)=>{
-  if(!data || !Array.isArray(data.customers) || !Array.isArray(data.sales) || !Array.isArray(data.payments)) {
-    throw new Error('بيانات السحابة غير صالحة');
-  }
-  db={
-    ...data,
-    customers:data.customers,
-    sales:data.sales,
-    payments:data.payments,
-    settings:{currency:'TRY',businessName:'MS Accounting',...(data.settings||{})}
-  };
-  localStorage.setItem(KEY,JSON.stringify(db));
-  renderAll();
-  window.dispatchEvent(new Event('ms-db-updated'));
-};
+window.getLocalDB=()=>db;window.saveLocalDB=()=>saveDB();
+window.replaceLocalDB=(next)=>{if(!next||!Array.isArray(next.customers)||!Array.isArray(next.sales)||!Array.isArray(next.payments)||!next.settings||typeof next.settings!=='object')throw new Error('Geçersiz bulut verisi');db={...next,customers:next.customers,sales:next.sales,payments:next.payments,settings:{...next.settings}};localStorage.setItem(KEY,JSON.stringify(db));renderAll()};
 function money(n){return new Intl.NumberFormat('tr-TR',{style:'currency',currency:db.settings.currency||'TRY'}).format(Number(n)||0)}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function id(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7)}

@@ -7,20 +7,19 @@ service cloud.firestore {
       return signedIn() && request.auth.token.email != null
         && request.auth.token.email.lower() == email;
     }
-
-    // Customer account data is written only by the administrator.
     match /customerAccounts/{email} {
       allow read: if isAdmin() || ownsEmail(email);
       allow create, update, delete: if isAdmin();
     }
-
-    // Customers can submit requests but cannot approve or edit them afterwards.
     match /paymentRequests/{requestId} {
       allow create: if signedIn()
         && request.resource.data.email == request.auth.token.email.lower()
         && request.resource.data.status == 'pending';
       allow read: if isAdmin() || (signedIn() && resource.data.email == request.auth.token.email.lower());
       allow update, delete: if isAdmin();
+    }
+    match /appData/{documentId} {
+      allow read, write: if isAdmin();
     }
   }
 }
