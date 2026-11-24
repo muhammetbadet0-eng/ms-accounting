@@ -21,8 +21,9 @@ if (!configReady) {
   const storage = getStorage(app);
   const mainDataRef = doc(store, 'appData', 'main_v2');
   let stopAccount = null, stopRequests = null, stopDb = null;
-  let lastRevision = null, syncActive = false, localDirty = false, applyingRemote = false;
-  let uploadTimer = null, currentUser = null;
+  let lastRevision = null, syncActive = false, applyingRemote = false, syncBusy = false, initializing = false, adminUser = false;
+  let currentUser = null, initialCloudDB = null;
+  const deviceId = (() => { let id = localStorage.getItem('ms_accounting_device_id'); if (!id) { id = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : Date.now().toString(36) + '_' + Math.random().toString(36).slice(2); localStorage.setItem('ms_accounting_device_id', id); } return id; })();
 
   $('cloudStatus').textContent = 'Firebase bağlı';
   $('cloudStatus').className = 'pill';
@@ -36,8 +37,9 @@ if (!configReady) {
   function syncPanel() {
     const panel = $('cloudDbSync');
     if (!panel) return;
-    panel.innerHTML = `<div class="notice"><b>مزامنة بيانات المحاسبة كاملة</b><br>تتم مزامنة العملاء والمبيعات والدفعات والإعدادات تلقائياً بعد ربط هذا الجهاز بالسحابة. عند التعارض لن يتم استبدال بياناتك بصمت.</div><div id="dbSyncState" class="muted">جاري فحص قاعدة السحابة...</div><div class="actionsbar"><button id="dbSyncStart" class="hidden">بدء المزامنة باستخدام بيانات هذا الجهاز</button><button id="dbSyncReload" class="secondary hidden">تحميل بيانات السحابة على هذا الجهاز</button></div>`;
+    panel.innerHTML = `<div class="notice"><b>مزامنة بيانات المحاسبة كاملة</b><br>تُحفظ كل عملية على هذا الجهاز فوراً، ثم تُرسل للسحابة تلقائياً عند عودة الإنترنت. تُدمج التغييرات على مستوى السجل حتى لا يمحو تعديل جهاز تغييرات سجلات أخرى.</div><div id="dbSyncState" class="muted">جاري فحص قاعدة السحابة...</div><div class="actionsbar"><button id="dbSyncStart" class="hidden">إنشاء قاعدة السحابة من هذا الجهاز</button><button id="dbSyncMerge" class="secondary hidden">دمج تغييرات هذا الجهاز مع السحابة</button><button id="dbSyncReload" class="secondary hidden">تحميل بيانات السحابة على هذا الجهاز</button></div>`;
     $('dbSyncStart').onclick = startFirstSync;
+    $('dbSyncMerge').onclick = mergeLocalIntoCloud;
     $('dbSyncReload').onclick = reloadFromCloud;
   }
 
@@ -68,50 +70,49 @@ if (!configReady) {
     finally { applyingRemote = false; }
   }
 
-  function watchCloudDB() {
-    if (stopDb) stopDb();
-    stopDb = onSnapshot(mainDataRef, snap => {
-      if (!snap.exists()) {
-        syncActive = false;
-        showSyncState('لم يتم إنشاء قاعدة السحابة بعد. ابدأ المزامنة من جهاز الكمبيوتر الذي يحتوي البيانات الصحيحة.');
-        $('dbSyncStart')?.classList.remove('hidden');
-        return;
-      }
-      const payload = snap.data();
-      const revision = Number(payload.revision || 0);
-      if (revision <= Number(lastRevision ?? -1)) return;
-      if (localDirty) {
-        showSyncState('يوجد تعديل محلي لم يُرفع، ووصل تعديل آخر من جهاز مختلف. أوقفنا الاستبدال التلقائي لحماية بياناتك؛ استخدم زر تحميل السحابة بعد مراجعة الوضع.', 'error');
-        $('dbSyncReload')?.classList.remove('hidden');
-        return;
-      }
-      try {
-        applyCloudDB(payload.db);
-        lastRevision = revision;
-        syncActive = true;
-        showSyncState('تم استلام آخر التغييرات من السحابة تلقائياً. رقم المراجعة: ' + revision, 'ok');
-        $('dbSyncStart')?.classList.add('hidden');
-        $('dbSyncReload')?.classList.add('hidden');
-      } catch (e) { showSyncState(e.message, 'error'); }
-    }, e => showSyncState('تعذر قراءة بيانات السحابة: ' + e.message, 'error'));
+  function stableJSON(value) {
+    if (Array.isArray(value)) return '[' + value.map(stableJSON).join(',') + ']';
+    if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + stableJSON(value[k])).join(',') + '}';
+    return JSON.stringify(value);
+  }
+
+  function emptyDB(value) {
+    return validDB(value) && value.customers.length === 0 && value.sales.length === 0 && value.payments.length === 0;
+  }
+
+  function applyChange(value, change) {
+    const next = JSON.parse(JSON.stringify(value));
+    if (change.entity === 'settings') {
+      if (change.action === 'upsert') next.settings = change.record || {};
+      return next;
+    }
+    if (!['customers','sales','payments'].includes(change.entity)) return next;
+    const rows = next[change.entity] || [];
+    const index = rows.findIndex(x => String(x.id) === String(change.recordId));
+    if (change.action === 'delete') { if (index >= 0) rows.splice(index, 1); }
+    else if (change.action === 'upsert' && change.record) {
+      if (index >= 0) rows[index] = change.record;
+      else rows.push(change.record);
+    }
+    next[change.entity] = rows;
+    return next;
   }
 
   async function startFirstSync() {
     const local = window.getLocalDB?.();
     if (!validDB(local)) return showSyncState('تعذر قراءة قاعدة بيانات هذا الجهاز.', 'error');
     if (dbSize(local) > 900000) return showSyncState('حجم البيانات كبير جداً لمستند Firestore واحد. لم يتم رفع شيء.', 'error');
-    if (!confirm('سيتم إنشاء قاعدة السحابة لأول مرة باستخدام بيانات هذا الجهاز. هل هذا هو الجهاز الذي تريد اعتماد بياناته كبداية؟')) return;
+    if (!confirm('سيتم إنشاء قاعدة السحابة لأول مرة باستخدام بيانات هذا الجهاز. هل هذا هو الجهاز الذي يحتوي البيانات الصحيحة؟')) return;
     $('dbSyncStart').disabled = true;
     try {
       await runTransaction(store, async tx => {
         const existing = await tx.get(mainDataRef);
-        if (existing.exists()) throw new Error('تم إنشاء قاعدة السحابة من جهاز آخر. أعد تحميل الصفحة لفحصها.');
-        tx.set(mainDataRef, { schemaVersion: 2, revision: 1, db: local, updatedAt: serverTimestamp(), updatedBy: currentUser.uid });
+        if (existing.exists()) throw new Error('تم إنشاء قاعدة السحابة من جهاز آخر. أعد فحص المزامنة.');
+        tx.set(mainDataRef, { schemaVersion: 3, revision: 1, db: local, updatedAt: serverTimestamp(), updatedBy: currentUser.uid });
       });
-      lastRevision = 1;
-      localDirty = false;
-      syncActive = true;
-      showSyncState('تم إنشاء قاعدة السحابة بنجاح. هذا الجهاز أصبح المصدر الأول للبيانات.', 'ok');
+      window.clearPendingChanges?.();
+      lastRevision = 1; syncActive = true;
+      showSyncState('تم إنشاء قاعدة السحابة. هذا الجهاز أصبح المصدر الأول للبيانات.', 'ok');
       $('dbSyncStart').classList.add('hidden');
       watchCloudDB();
     } catch (e) {
@@ -120,92 +121,148 @@ if (!configReady) {
     }
   }
 
-  async function reloadFromCloud() {
-    if (!confirm('سيتم استبدال البيانات المحلية بنسخة السحابة الحالية. هل تريد المتابعة؟')) return;
+  async function mergeLocalIntoCloud() {
+    if (!initialCloudDB) return;
     try {
-      const snap = await getDoc(mainDataRef);
-      if (!snap.exists()) throw new Error('لا توجد قاعدة بيانات في السحابة.');
-      const payload = snap.data();
-      applyCloudDB(payload.db);
-      lastRevision = Number(payload.revision || 0);
-      localDirty = false;
-      syncActive = true;
-      showSyncState('تم تحميل نسخة السحابة على هذا الجهاز.', 'ok');
-      $('dbSyncReload').classList.add('hidden');
-      $('dbSyncStart').classList.add('hidden');
-      watchCloudDB();
-    } catch (e) { showSyncState('تعذر تحميل نسخة السحابة: ' + e.message, 'error'); }
+      const count = window.queueDBDiff?.(initialCloudDB);
+      const pending = window.getPendingChanges?.() || [];
+      window.applySyncedDB(initialCloudDB, pending);
+      syncActive = true; initialCloudDB = null;
+      $('dbSyncMerge').classList.add('hidden'); $('dbSyncReload').classList.add('hidden');
+      showSyncState(`تم تجهيز ${count || 0} تغيير محلي للدمج الآمن. جاري رفعها دون استبدال بقية السجلات...`);
+      watchCloudDB(); flushOutbox();
+    } catch (e) { showSyncState('تعذر تجهيز الدمج: ' + e.message, 'error'); }
   }
 
-  async function uploadLocalChanges() {
-    if (!syncActive || !localDirty || applyingRemote) return;
-    const local = window.getLocalDB?.();
-    if (!validDB(local)) return showSyncState('تعذر قراءة البيانات المحلية.', 'error');
-    const uploadSnapshot = JSON.stringify(local);
-    if (new TextEncoder().encode(uploadSnapshot).length > 900000) return showSyncState('حجم البيانات تجاوز الحد الآمن لمستند واحد؛ لم يتم رفع التعديل.', 'error');
-    const stableLocal = JSON.parse(uploadSnapshot);
+  async function reloadFromCloud() {
+    if (!initialCloudDB) return;
+    if (!navigator.onLine) return showSyncState('اتصل بالإنترنت أولاً حتى نتأكد من أحدث نسخة سحابية قبل استبدال بيانات هذا الجهاز.', 'error');
+    if (!confirm('سيتم استبدال بيانات هذا الجهاز ببيانات السحابة. تأكد أنك لا تحتاج أي اختلافات محلية. هل تريد المتابعة؟')) return;
     try {
-      let newRevision = null;
-      await runTransaction(store, async tx => {
-        const snap = await tx.get(mainDataRef);
-        if (!snap.exists()) throw new Error('اختفت قاعدة السحابة. أوقفنا الرفع لحماية البيانات.');
-        const cloudRevision = Number(snap.data().revision || 0);
-        if (cloudRevision !== Number(lastRevision)) throw new Error('CONFLICT: توجد تغييرات أحدث في السحابة من جهاز آخر.');
-        newRevision = cloudRevision + 1;
-        tx.update(mainDataRef, { db: stableLocal, revision: newRevision, updatedAt: serverTimestamp(), updatedBy: currentUser.uid });
-      });
-      lastRevision = newRevision;
-      const changedAgain = JSON.stringify(window.getLocalDB?.()) !== uploadSnapshot;
-      localDirty = changedAgain;
-      showSyncState('تم رفع آخر تعديل ومزامنته بنجاح. رقم المراجعة: ' + newRevision, 'ok');
-      if (changedAgain) { if (uploadTimer) clearTimeout(uploadTimer); uploadTimer = setTimeout(uploadLocalChanges, 300); }
+      const fresh = await getDoc(mainDataRef);
+      if (!fresh.exists() || !validDB(fresh.data().db)) throw new Error('تعذر التحقق من النسخة السحابية الحالية.');
+      initialCloudDB = fresh.data().db;
+      window.clearPendingChanges?.();
+      window.applySyncedDB(initialCloudDB, []);
+      lastRevision = Number(fresh.data().revision || 0);
+      initialCloudDB = null; syncActive = true;
+      $('dbSyncMerge').classList.add('hidden'); $('dbSyncReload').classList.add('hidden');
+      showSyncState('تم تحميل أحدث بيانات السحابة على هذا الجهاز.', 'ok');
+      watchCloudDB();
+    } catch (e) { showSyncState('تعذر تحميل بيانات السحابة: ' + e.message, 'error'); }
+  }
+
+  function watchCloudDB() {
+    if (stopDb) stopDb();
+    stopDb = onSnapshot(mainDataRef, snap => {
+      if (!snap.exists()) { showSyncState('لم تعد قاعدة السحابة موجودة. لم نغيّر البيانات المحلية.', 'error'); return; }
+      const payload = snap.data();
+      const revision = Number(payload.revision || 0);
+      if (revision <= Number(lastRevision ?? -1)) return;
+      try {
+        const pending = window.getPendingChanges?.() || [];
+        window.applySyncedDB(payload.db, pending);
+        lastRevision = revision;
+        showSyncState(`تم استلام تغييرات السحابة ودمجها مع ${pending.length} تعديل محلي معلّق. المراجعة ${revision}.`, 'ok');
+        if (pending.length && navigator.onLine) flushOutbox();
+      } catch (e) { showSyncState(e.message, 'error'); }
+    }, e => showSyncState('تعذر قراءة بيانات السحابة: ' + e.message + ' — ستُعاد المحاولة عند عودة الاتصال.', 'error'));
+  }
+
+  async function flushOutbox() {
+    if (!syncActive || syncBusy || !currentUser || !navigator.onLine) return;
+    syncBusy = true;
+    try {
+      while (navigator.onLine) {
+        const pending = window.getPendingChanges?.() || [];
+        if (!pending.length) break;
+        const change = pending[0];
+        let committedRevision = lastRevision || 0;
+        await runTransaction(store, async tx => {
+          const markerRef = doc(store, 'appData', 'change_' + change.id);
+          const marker = await tx.get(markerRef);
+          const mainSnap = await tx.get(mainDataRef);
+          if (!mainSnap.exists()) throw new Error('قاعدة السحابة غير موجودة؛ احتفظنا بالتعديلات المحلية.');
+          const cloud = mainSnap.data();
+          if (marker.exists()) { committedRevision = Number(marker.data().revision || cloud.revision || 0); return; }
+          if (!validDB(cloud.db)) throw new Error('قاعدة السحابة ليست بصيغة صحيحة.');
+          const nextDB = applyChange(cloud.db, change);
+          if (dbSize(nextDB) > 900000) throw new Error('حجم قاعدة البيانات تجاوز الحد الآمن؛ بقي التعديل محفوظاً على هذا الجهاز.');
+          committedRevision = Number(cloud.revision || 0) + 1;
+          tx.update(mainDataRef, { db: nextDB, revision: committedRevision, schemaVersion: 3, updatedAt: serverTimestamp(), updatedBy: currentUser.uid });
+          tx.set(markerRef, { kind: 'syncChangeMarker', changeId: change.id, entity: change.entity, recordId: change.recordId, revision: committedRevision, deviceId: deviceId, createdAt: serverTimestamp() });
+        });
+        window.ackPendingChanges?.([change.id]);
+        lastRevision = Math.max(Number(lastRevision || 0), committedRevision);
+      }
+      const remaining = (window.getPendingChanges?.() || []).length;
+      if (!remaining) showSyncState('كل التعديلات محفوظة في السحابة ومتزامنة مع الأجهزة.', 'ok');
+      else showSyncState(`تم رفع بعض التعديلات، وبقي ${remaining} بانتظار الاتصال.`, 'error');
     } catch (e) {
-      if (String(e.message).includes('CONFLICT')) {
-        showSyncState('تعارض بين تعديل هذا الجهاز وتعديل أحدث في جهاز آخر. لم نستبدل أي بيانات. راجع النسخة ثم استخدم تحميل بيانات السحابة عند الحاجة.', 'error');
-        $('dbSyncReload')?.classList.remove('hidden');
-      } else showSyncState('تعذر رفع التعديل: ' + e.message, 'error');
-    }
+      showSyncState('التعديل محفوظ على هذا الجهاز، وتعذّر رفعه الآن: ' + e.message + ' — ستتم إعادة المحاولة تلقائياً.', 'error');
+    } finally { syncBusy = false; }
+  }
+
+  async function initializeAdminSync() {
+    if (!adminUser || !currentUser || initializing) return;
+    if (syncActive) { watchCloudDB(); flushOutbox(); return; }
+    initializing = true;
+    try {
+      const snap = await getDoc(mainDataRef);
+      if (!snap.exists()) {
+        showSyncState('لا توجد قاعدة محاسبة في السحابة بعد. أنشئها من الجهاز الذي يحتوي البيانات الصحيحة.');
+        $('dbSyncStart')?.classList.remove('hidden');
+        return;
+      }
+      const payload = snap.data();
+      if (!validDB(payload.db)) throw new Error('بيانات السحابة ليست بصيغة قاعدة MS Accounting الصحيحة.');
+      const local = window.getLocalDB?.();
+      const pending = window.getPendingChanges?.() || [];
+      lastRevision = Number(payload.revision || 0);
+      if (pending.length) {
+        window.applySyncedDB(payload.db, pending);
+        syncActive = true; watchCloudDB(); flushOutbox();
+        showSyncState(`وجدنا ${pending.length} تعديلات محلية غير مرفوعة؛ دمجناها مع السحابة دون حذفها.`, 'ok');
+      } else if (emptyDB(local) || stableJSON(local) === stableJSON(payload.db)) {
+        window.applySyncedDB(payload.db, []);
+        syncActive = true; watchCloudDB();
+        showSyncState('تم تحميل بيانات السحابة. الحفظ المحلي والمزامنة التلقائية جاهزان.', 'ok');
+      } else {
+        initialCloudDB = payload.db;
+        showSyncState('توجد اختلافات بين بيانات هذا الجهاز والسحابة. لم نستبدل أياً منهما. اختر الدمج للحفاظ على تغييرات هذا الجهاز، أو التحميل لاعتماد نسخة السحابة.', 'error');
+        $('dbSyncMerge')?.classList.remove('hidden'); $('dbSyncReload')?.classList.remove('hidden');
+      }
+    } catch (e) { showSyncState('تعذر تهيئة المزامنة: ' + e.message + ' — سيُعاد الفحص عند عودة الإنترنت.', 'error'); }
+    finally { initializing = false; }
   }
 
   window.addEventListener('ms-db-updated', () => {
     if (!syncActive || applyingRemote) return;
-    localDirty = true;
-    if (uploadTimer) clearTimeout(uploadTimer);
-    uploadTimer = setTimeout(uploadLocalChanges, 700);
+    if (!navigator.onLine) { showSyncState('تم حفظ العملية على هذا الجهاز. ستُرفع تلقائياً عند عودة الإنترنت.'); return; }
+    flushOutbox();
   });
+  window.addEventListener('online', () => { if (adminUser) initializeAdminSync(); });
+  window.addEventListener('offline', () => { if (adminUser) showSyncState('انقطع الإنترنت. كل عملية جديدة تُحفظ محلياً، وستُرفع تلقائياً عند عودة الاتصال.', 'error'); });
 
   onAuthStateChanged(auth, async user => {
     if (stopAccount) stopAccount();
     if (stopRequests) stopRequests();
     if (stopDb) stopDb();
-    syncActive = false; localDirty = false; lastRevision = null; currentUser = user || null;
+    syncActive = false; lastRevision = null; initialCloudDB = null; currentUser = user || null; adminUser = false;
     $('cloudLogin').classList.toggle('hidden', !!user);
     $('cloudPortal').classList.toggle('hidden', !user);
     if (!user) { $('cloudPortal').innerHTML = ''; $('cloudStatus').textContent = 'Firebase bağlı'; return; }
 
     const email = (user.email || '').toLowerCase();
-    const token = await user.getIdTokenResult(true);
+    const token = await user.getIdTokenResult();
     const isAdmin = token.claims.admin === true;
+    adminUser = isAdmin;
     $('cloudPortal').innerHTML = `<div class="row"><b>مرحباً ${email.replace(/[&<>"']/g,'')}</b><button class="secondary small" id="cloudLogout">خروج</button></div>${isAdmin ? '<div id="cloudDbSync" style="margin-top:14px"></div><div class="notice">حساب الإدارة: يمكنك مزامنة كشوف العملاء المسجلين ببريد إلكتروني في بياناتهم.</div><button id="cloudSyncAll">مزامنة جميع حسابات العملاء الآن</button><div id="cloudSyncMsg" class="muted"></div>' : ''}<div id="accountSnapshot" class="notice" style="margin-top:12px">جاري تحميل كشف الحساب السحابي...</div><div id="paymentRequestList"></div>${isAdmin ? '' : '<h3>إرسال طلب دفع / إيصال</h3><form id="paymentRequestForm"><label>المبلغ المطلوب تسجيله (₺)</label><input name="amount" type="number" min="0.01" step="0.01" required><label>طريقة الدفع</label><select name="method"><option>Nakit</option><option>Havale / EFT</option><option>Kredi Kartı</option></select><label>ملاحظة</label><textarea name="note" placeholder="رقم التحويل أو أي تفاصيل"></textarea><label>إرفاق إيصال (صورة أو PDF، حتى 10MB)</label><input name="receipt" type="file" accept="image/*,application/pdf"><div class="actionsbar"><button>إرسال للمراجعة</button></div><small class="muted">الطلب لا يغيّر رصيدك. الإدارة تراجعه وتوافق عليه قبل تسجيل الدفعة.</small></form>'}`;
     $('cloudLogout').onclick = () => signOut(auth);
 
     if (isAdmin) {
       syncPanel();
-      try {
-        const firstCheck = await getDoc(mainDataRef);
-        if (firstCheck.exists()) {
-          const payload = firstCheck.data();
-          applyCloudDB(payload.db);
-          lastRevision = Number(payload.revision || 0);
-          syncActive = true;
-          showSyncState('تم تحميل بيانات السحابة. المزامنة التلقائية فعالة.', 'ok');
-          watchCloudDB();
-        } else {
-          showSyncState('لا توجد قاعدة محاسبة في السحابة بعد. ابدأ من جهاز الكمبيوتر الذي تريد اعتماد بياناته أولاً.');
-          $('dbSyncStart').classList.remove('hidden');
-          watchCloudDB();
-        }
-      } catch (e) { showSyncState('تعذر تهيئة المزامنة: ' + e.message, 'error'); }
+      await initializeAdminSync();
 
       $('cloudSyncAll').onclick = async () => {
         try {
