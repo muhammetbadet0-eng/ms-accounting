@@ -1,4 +1,4 @@
-const CACHE = 'ms-accounting-offline-v4';
+const CACHE = 'ms-accounting-offline-v5';
 const APP_FILES = ['./', './index.html', './manifest.json', './cloud.js', './firebase-config.js'];
 const FIREBASE_ORIGIN = 'https://www.gstatic.com';
 const FIREBASE_PREFIX = '/firebasejs/10.14.1/';
