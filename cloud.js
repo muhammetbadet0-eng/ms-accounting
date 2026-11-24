@@ -1,7 +1,7 @@
 import { firebaseConfig } from './firebase-config.js';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
-import { getFirestore, doc, getDoc, setDoc, collection, addDoc, query, where, onSnapshot, serverTimestamp, updateDoc, runTransaction } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+import { getFirestore, doc, getDoc, setDoc, collection, addDoc, query, where, onSnapshot, serverTimestamp, updateDoc, runTransaction, deleteDoc } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js';
 
 const root = document.createElement('section');
@@ -192,6 +192,12 @@ if (!configReady) {
           tx.update(mainDataRef, { db: nextDB, revision: committedRevision, schemaVersion: 3, updatedAt: serverTimestamp(), updatedBy: currentUser.uid });
           tx.set(markerRef, { kind: 'syncChangeMarker', changeId: change.id, entity: change.entity, recordId: change.recordId, revision: committedRevision, deviceId: deviceId, createdAt: serverTimestamp() });
         });
+        // Remove the customer's separate portal statement after the main record deletion commits.
+        // Keep the outbox item pending until this cleanup succeeds, so a failed delete can retry.
+        if (change.entity === 'customers' && change.action === 'delete') {
+          const email = String(change.record?.email || '').trim().toLowerCase();
+          if (email) await deleteDoc(doc(store, 'customerAccounts', email));
+        }
         window.ackPendingChanges?.([change.id]);
         lastRevision = Math.max(Number(lastRevision || 0), committedRevision);
       }

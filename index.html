@@ -26,6 +26,42 @@ footer{text-align:center;color:var(--muted);font-size:12px;margin-top:25px}
 @media(max-width:800px){.stats{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}header{align-items:flex-start}.brand strong{font-size:16px}}
 @media(max-width:430px){.stats{gap:8px}.stat{padding:13px}.stat b{font-size:20px}.formgrid{grid-template-columns:1fr}.full{grid-column:auto}.nav button{flex:1}}
 @media print{header,.nav,.no-print,button{display:none!important}body{background:#fff}.card,.stat{box-shadow:none;border:0}main{margin:0;max-width:none}}
+
+/* MS Accounting — Premium Design */
+:root{
+ --bg:#f0eee7;
+ --panel:#fffefa;
+ --ink:#202c25;
+ --muted:#788278;
+ --line:#e5e2d8;
+ --green:#244d3a;
+ --green2:#e8eee7;
+ --gold:#b99a62;
+ --shadow:0 10px 30px rgba(35,55,42,.08);
+}
+body{background:linear-gradient(145deg,#f4f1e9,#e9eee8)}
+header{background:linear-gradient(115deg,#14271e,#294b38);border-bottom:3px solid var(--gold);box-shadow:0 5px 22px rgba(20,39,30,.16)}
+.logo{background:linear-gradient(145deg,#e5d0a0,#b99a62);box-shadow:0 3px 10px #0002}
+.stat,.card{border-radius:18px;border-color:#e8e4d9;box-shadow:0 8px 26px rgba(35,55,42,.065)}
+.stat{background:linear-gradient(145deg,#fffefa,#f9f7f0)}
+.stat b{color:#294b38}
+.stat b.green{color:#26734b}
+.stat b.red{color:#b33a36}
+.nav button{border-radius:12px;font-weight:700}
+.nav button.active{background:linear-gradient(120deg,#244d3a,#35674c);box-shadow:0 4px 12px #244d3a30}
+.item{border-radius:14px;border-color:#e9e6dc;transition:transform .15s,box-shadow .15s}
+.item:hover{transform:translateY(-1px);box-shadow:0 5px 15px #243c2b10}
+button{transition:filter .15s,transform .15s}
+button:hover{filter:brightness(1.06)}
+button:active{transform:scale(.98)}
+button.danger{background:#fff0ed;color:#ad3933;border-color:#f0d4cf}
+input,select,textarea{border-color:#e0e4dc;border-radius:11px}
+.modalbox{border:1px solid #e8e3d7;box-shadow:0 20px 70px #0003}
+@media(max-width:430px){
+ .item{align-items:flex-start;flex-direction:column}
+ .item .actions{width:100%}
+ .item .actions button{flex:1}
+}
 </style>
 </head>
 <body>
@@ -89,7 +125,7 @@ function diffDB(base,current){
   const before=new Map((base[entity]||[]).map(x=>[String(x.id),x]));
   const after=new Map((current[entity]||[]).map(x=>[String(x.id),x]));
   for(const [recordId,record] of after){const previous=before.get(recordId);if(!previous||JSON.stringify(previous)!==JSON.stringify(record))changes.push({id:makeChangeId(),entity,recordId,action:'upsert',record:cloneDB(record),createdAt:Date.now()})}
-  for(const recordId of before.keys())if(!after.has(recordId))changes.push({id:makeChangeId(),entity,recordId,action:'delete',createdAt:Date.now()});
+  for(const [recordId,record] of before)if(!after.has(recordId))changes.push({id:makeChangeId(),entity,recordId,action:'delete',record:cloneDB(record),createdAt:Date.now()});
  }
  if(JSON.stringify(base.settings||{})!==JSON.stringify(current.settings||{}))changes.push({id:makeChangeId(),entity:'settings',recordId:'settings',action:'upsert',record:cloneDB(current.settings||{}),createdAt:Date.now()});
  return changes;
@@ -130,7 +166,26 @@ function renderAll(){let sales=db.sales.reduce((a,x)=>a+x.total,0),paid=db.payme
 ['sSales','rSales'].forEach(x=>document.getElementById(x).textContent=money(sales));['sPaid','rPaid'].forEach(x=>document.getElementById(x).textContent=money(paid));['sDebt','rDebt'].forEach(x=>document.getElementById(x).textContent=money(debt));
 document.getElementById('sCustomers').textContent=db.customers.length;document.getElementById('rCount').textContent=db.sales.length+db.payments.length;
 renderCustomers();renderRecent();document.getElementById('businessName').value=db.settings.businessName||'';document.getElementById('currency').value=db.settings.currency||'TRY';renderUnits()}
-function renderCustomers(){let q=(document.getElementById('customerSearch')?.value||'').toLowerCase();let el=document.getElementById('customerList');let arr=db.customers.filter(c=>c.name.toLowerCase().includes(q));el.innerHTML=arr.length?arr.map(c=>{let t=totals(c.id);return `<div class="item"><div><strong>${esc(c.name)}</strong><small>${esc(c.phone||'Telefon eklenmedi')} · ${db.sales.filter(x=>x.customerId===c.id).length} satış</small><div style="margin-top:5px"><span class="pill ${t.balance>0?'red':''}">Bakiye: ${money(t.balance)}</span></div></div><div class="actions"><button class="small" onclick="openAccount('${c.id}')">Hesap</button><button class="small secondary" onclick="openTransaction('${c.id}','sale')">Satış +</button><button class="small secondary" onclick="openTransaction('${c.id}','payment')">Ödeme +</button></div></div>`}).join(''):'<div class="empty">Henüz müşteri yok. “Müşteri ekle” ile başlayın.</div>'}
+function renderCustomers(){
+ let q=(document.getElementById('customerSearch')?.value||'').trim().toLocaleLowerCase('tr-TR');
+ let el=document.getElementById('customerList');
+ let arr=db.customers.filter(c=>(c.name||'').toLocaleLowerCase('tr-TR').includes(q));
+ el.innerHTML=arr.length?arr.map(c=>{let t=totals(c.id);return `<div class="item"><div><strong>${esc(c.name)}</strong><small>${esc(c.phone||'Telefon eklenmedi')} · ${db.sales.filter(x=>x.customerId===c.id).length} satış</small><div style="margin-top:5px"><span class="pill ${t.balance>0?'red':''}">Bakiye: ${money(t.balance)}</span></div></div><div class="actions"><button class="small" onclick="openAccount('${c.id}')">Hesap</button><button class="small secondary" onclick="openTransaction('${c.id}','sale')">Satış +</button><button class="small secondary" onclick="openTransaction('${c.id}','payment')">Ödeme +</button><button class="small danger" onclick="deleteCustomer('${c.id}')">Müşteriyi sil</button></div></div>`}).join(''):'<div class="empty">Henüz müşteri yok. “Müşteri ekle” ile başlayın.</div>';
+}
+function deleteCustomer(cid){
+ const customer=db.customers.find(c=>c.id===cid);
+ if(!customer)return;
+ const salesCount=db.sales.filter(x=>x.customerId===cid).length;
+ const paymentsCount=db.payments.filter(x=>x.customerId===cid).length;
+ const ok=confirm(`DİKKAT! "${customer.name}" müşterisi ve tüm kayıtları silinecek.\n\nSatış sayısı: ${salesCount}\nÖdeme sayısı: ${paymentsCount}\n\nMüşteri bilgileri, satışları ve ödemeleri silinecektir. Bu işlem geri alınamaz.\n\nDevam etmek istiyor musunuz?`);
+ if(!ok)return;
+ db.customers=db.customers.filter(c=>c.id!==cid);
+ db.sales=db.sales.filter(x=>x.customerId!==cid);
+ db.payments=db.payments.filter(x=>x.customerId!==cid);
+ saveDB();
+ closeModal();
+ alert('Müşteri ve tüm hesap hareketleri silindi. Silme işlemi bulut senkronizasyonu için sıraya alındı.');
+}
 function renderRecent(){let rows=[...db.sales.map(x=>({...x,type:'Satış'})),...db.payments.map(x=>({...x,type:'Tahsilat'}))].sort((a,b)=>(b.created||b.date).localeCompare(a.created||a.date)).slice(0,7);document.getElementById('recent').innerHTML=rows.length?rows.map(x=>{let c=db.customers.find(c=>c.id===x.customerId);return `<div class="item"><div><strong>${esc(c?.name||'Silinmiş müşteri')} · ${x.type}</strong><small>${esc(x.date)} ${x.type==='Tahsilat'?'· '+esc(x.method):'· '+esc(x.items?.map(i=>i.name).join(', ')||'')}</small></div><b>${money(x.type==='Satış'?x.total:x.amount)}</b></div>`}).join(''):'<div class="empty">Henüz işlem kaydedilmedi.</div>'}
 function modal(title,body){document.getElementById('modalTitle').textContent=title;document.getElementById('modalBody').innerHTML=body;document.getElementById('modal').classList.remove('hidden')}
 function closeModal(){document.getElementById('modal').classList.add('hidden')}
